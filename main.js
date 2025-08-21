@@ -14,13 +14,13 @@ const shaderSettings = {
     u_mouseEffectIntensity: 0.1,
     u_noiseScale: 15.0,
     u_noiseIntensity: 0.2,
-    u_decaySpeed: 0.022,
-    u_grainIntensity: 0.15,
-    u_minGrainSize: 80.0,
-    u_maxGrainSize: 200.0,
+    u_decaySpeed: 0.015,
+    holoStrength: 0.6,
+    grainStrength: 0.,
 };
 
 const fragmentShaderSource = `#define PI 3.141592654
+#define TAU (2.0*PI)
 
 precision mediump float;
 
@@ -34,9 +34,8 @@ uniform float u_mouseEffectIntensity;
 uniform float u_noiseScale;
 uniform float u_noiseIntensity;
 uniform vec2 u_decayedMousePosition;
-uniform float u_grainIntensity;
-uniform float u_minGrainSize;
-uniform float u_maxGrainSize;
+uniform float u_holoStrength;
+uniform float u_grainStrength;
 
 uniform vec3 u_colors[10];
 
@@ -84,16 +83,8 @@ vec3 palette(float t) {
     }
 }
 
-void main() {
-    vec2 uv = (gl_FragCoord.xy / iResolution.y) * u_scale;
-    vec2 centered_uv = uv - vec2(iResolution.x / iResolution.y * 0.5, 0.5) * u_scale;
-    float dist_to_mouse = length(centered_uv - u_decayedMousePosition);
-    float noise_val = perlin_noise_2d(centered_uv * u_noiseScale + iTime) * u_noiseIntensity;
-    float effective_radius = u_mouseEffectRadius + noise_val;
-    float mouse_influence = 1.0 - smoothstep(0.0, effective_radius, dist_to_mouse);
-    mouse_influence = pow(mouse_influence, 2.0);
-    vec2 final_uv = uv;
-    final_uv = vec2(.125, .75) + (final_uv - vec2(.125,.75)) * .03;
+float myHeight(vec2 uv, float iTime, vec2 u_decayedMousePosition) {
+    vec2 final_uv = vec2(.125, .75) + (uv - vec2(.125, .75)) * .03;
     float T = iTime * .65;
     vec3 c = clamp(1. - .48 * vec3(
         length(final_uv - vec2(0.0, 0.5)),
@@ -102,7 +93,7 @@ void main() {
     ), 0., 1.) * 2. - 1.;
     vec3 c0 = vec3(0);
     float w0 = 0.;
-    const float N = 30.;
+    const float N = 20.;
     for (float i = 0.; i < N; i++) {
         float random_pos_offset = rand(vec2(i, 1.0));
         float random_speed_multiplier = rand(vec2(i, 2.0));
@@ -112,6 +103,14 @@ void main() {
         float wt = (i * i / N / N - .2) * 0.3;
         float wp = 0.5 + (i + 1.) * (i + 1.5) * 0.001;
         float wb = .05 + i / N * 0.1;
+
+        vec2 centered_uv = uv - vec2(iResolution.x / iResolution.y * 0.5, 0.5) * u_scale;
+        float dist_to_mouse = length(centered_uv - u_decayedMousePosition);
+        float noise_val = perlin_noise_2d(centered_uv * u_noiseScale + iTime) * u_noiseIntensity;
+        float effective_radius = u_mouseEffectRadius + noise_val;
+        float mouse_influence = 1.0 - smoothstep(0.0, effective_radius, dist_to_mouse);
+        mouse_influence = pow(mouse_influence, 2.0);
+
         float mouse_speed_effect = u_mouseEffectIntensity * mouse_influence;
         c.zx = rot(c.zx, 0.1 + current_time * 0.1 * wt + (swirl_uv.x + .7) * 23. * wp + mouse_speed_effect);
         c.xy = rot(c.xy, c.z * c.x * wb + 1.7 + current_time * wt + (swirl_uv.y + 1.1) * 15. * wp + mouse_speed_effect);
@@ -124,13 +123,70 @@ void main() {
     c0 = c0 / w0 * 2. + .5;
     c0 *= .5 + dot(c0, vec3(1, 1, 1)) / sqrt(3.) * .5;
     c0 += pow(length(sin(c0 * PI * 4.)) / sqrt(3.) * 1.0, 20.) * (.3 + .7 * c0);
-    float t = clamp(length(c0) / 2.0, 0.0, 1.0);
-    c0 = palette(t);
-    float grain_size_val = perlin_noise_2d(gl_FragCoord.xy / iResolution.xy * 1.5 + iTime * 0.1) * 0.5 + 0.5;
-    float grain_size_scaled = u_minGrainSize + grain_size_val * (u_maxGrainSize - u_minGrainSize);
-    float grain_value = rand(uv * grain_size_scaled + iTime) * 2.0 - 1.0;;
-    c0 += grain_value * u_grainIntensity;
-    gl_FragColor = vec4(c0, 1.0);
+    return length(c0);
+}
+
+vec3 normal(vec2 p) {
+    vec2 eps = vec2(0.01, 0.0);
+    float h = myHeight(p, iTime, u_decayedMousePosition);
+    float hx = myHeight(p + eps.xy, iTime, u_decayedMousePosition);
+    float hy = myHeight(p + eps.yx, iTime, u_decayedMousePosition);
+    
+    vec3 n;
+    n.x = hx - h;
+    n.y = hy - h;
+    n.z = -eps.x * 20.0;
+    
+    return normalize(n);
+}
+
+vec3 holoOverlay(vec2 uv, vec3 n, vec3 v, vec3 l) {
+    float fres = pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    float spec = pow(max(dot(reflect(-l, n), v), 0.0), 12.0);
+    float phase = (uv.x + uv.y) * 40.0 + iTime * 0.5 + dot(n.xy, vec2(5.0, -3.0));
+    vec3 rainbow = 0.5 + 0.5 * cos(phase + vec3(0.0, 2.094, 4.188));
+    return rainbow * fres * spec;
+}
+
+// ----- Обновленная функция для генерации "киношной" зернистости -----
+vec3 filmGrain(vec2 uv, float time) {
+    // Уменьшаем множитель, чтобы сделать зерно крупнее
+    // Добавляем большое случайное смещение, зависящее от времени, чтобы убрать муар
+    vec2 grain_uv = uv * 150.0 + time * 100.0; 
+    
+    // Используем 'grain_uv' для генерации значений для каждого цветового канала
+    vec3 grain = vec3(
+        rand(grain_uv),
+        rand(grain_uv + 1.0),
+        rand(grain_uv + 2.0)
+    );
+    
+    // Смещение шума от нуля для равномерного распределения
+    grain = grain * 2.0 - 1.0; 
+    return grain;
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy / iResolution.y) * u_scale;
+
+    vec3 n = normal(uv);
+    vec3 light_direction = normalize(vec3(0.5, 0.5, 1.0));
+    vec3 viewDir = normalize(vec3(0.0, 0.0, 1.0));
+
+    float diffuse = max(dot(n, light_direction), 0.0);
+
+    float height_value = myHeight(uv, iTime, u_decayedMousePosition);
+    vec3 base_color = palette(clamp(height_value / 2.0, 0.0, 1.0));
+    vec3 final_color = base_color + (diffuse * 0.5);
+
+    vec3 holo = holoOverlay(uv, n, viewDir, light_direction);
+    final_color += u_holoStrength * holo;
+
+    // Добавление эффекта зернистости к финальному цвету
+    vec3 grain_color = filmGrain(uv, iTime) * u_grainStrength;
+    final_color += grain_color;
+
+    gl_FragColor = vec4(final_color, 1.0);
 }`;
 
 const vertexShaderSource = `
@@ -164,15 +220,27 @@ function startRendering() {
     const noiseScaleLocation = gl.getUniformLocation(program, "u_noiseScale");
     const noiseIntensityLocation = gl.getUniformLocation(program, "u_noiseIntensity");
     const decayedMousePositionLocation = gl.getUniformLocation(program, "u_decayedMousePosition");
-    const grainIntensityLocation = gl.getUniformLocation(program, "u_grainIntensity");
-    const minGrainSizeLocation = gl.getUniformLocation(program, "u_minGrainSize");
-    const maxGrainSizeLocation = gl.getUniformLocation(program, "u_maxGrainSize");
+    const holoStrengthLocation = gl.getUniformLocation(program, "u_holoStrength");
+    const grainStrengthLocation = gl.getUniformLocation(program, "u_grainStrength");
     const colorsUniformLocation = gl.getUniformLocation(program, "u_colors[0]");
 
     const defaultColors = [
-        '#051129', '#232b3e', '#321f56', '#a2ced7', '#605d83',
-        '#39104c', '#d05389', '#ff7070', '#ffe78f', '#ffffff'
+        '#ffffff', '#ffffff', '#999cb2', '#303336', '#68667a',
+        '#2f3241', '#535a6e', '#97acbf', '#7d84a1', '#ffffff'
     ];
+    
+    const cachedColorsData = new Float32Array([].concat(
+        hexToRgb(defaultColors[0]),
+        hexToRgb(defaultColors[1]),
+        hexToRgb(defaultColors[2]),
+        hexToRgb(defaultColors[3]),
+        hexToRgb(defaultColors[4]),
+        hexToRgb(defaultColors[5]),
+        hexToRgb(defaultColors[6]),
+        hexToRgb(defaultColors[7]),
+        hexToRgb(defaultColors[8]),
+        hexToRgb(defaultColors[9])
+    ));
 
     const positionBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
@@ -194,9 +262,11 @@ function startRendering() {
         mouse[1] = canvas.height - e.clientY;
     });
 
+    gl.uniform3fv(colorsUniformLocation, cachedColorsData);
+
     function render(currentTime) {
         const time = (currentTime - startTime) * 0.001 * shaderSettings.animationSpeed;
-        resizeCanvas();
+
         const centered_mouse_uv = [
             (mouse[0] / gl.canvas.width - 0.5) * (gl.canvas.width / gl.canvas.height) * shaderSettings.u_scale,
             (mouse[1] / gl.canvas.height - 0.5) * shaderSettings.u_scale
@@ -215,35 +285,22 @@ function startRendering() {
         gl.uniform1f(noiseScaleLocation, shaderSettings.u_noiseScale);
         gl.uniform1f(noiseIntensityLocation, shaderSettings.u_noiseIntensity);
         gl.uniform2fv(decayedMousePositionLocation, decayedMousePosition);
-        gl.uniform1f(grainIntensityLocation, shaderSettings.u_grainIntensity);
-        gl.uniform1f(minGrainSizeLocation, shaderSettings.u_minGrainSize);
-        gl.uniform1f(maxGrainSizeLocation, shaderSettings.u_maxGrainSize);
-        
-        const colorsData = [].concat(
-            hexToRgb(defaultColors[0]),
-            hexToRgb(defaultColors[1]),
-            hexToRgb(defaultColors[2]),
-            hexToRgb(defaultColors[3]),
-            hexToRgb(defaultColors[4]),
-            hexToRgb(defaultColors[5]),
-            hexToRgb(defaultColors[6]),
-            hexToRgb(defaultColors[7]),
-            hexToRgb(defaultColors[8]),
-            hexToRgb(defaultColors[9])
-        );
-        gl.uniform3fv(colorsUniformLocation, new Float32Array(colorsData));
-        
+        gl.uniform1f(holoStrengthLocation, shaderSettings.holoStrength);
+        gl.uniform1f(grainStrengthLocation, shaderSettings.grainStrength);
+
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         requestAnimationFrame(render);
     }
 
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
     requestAnimationFrame(render);
 }
 
 function createShader(gl, type, source) {
     const shader = gl.createShader(type);
     gl.shaderSource(shader, source);
-    gl.compileShader(shader);
+    gl.compileShader(shader, gl.COMPILE_STATUS);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
         console.error('Ошибка компиляции шейдера:', gl.getShaderInfoLog(shader));
         gl.deleteShader(shader);
